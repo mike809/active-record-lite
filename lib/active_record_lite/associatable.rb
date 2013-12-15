@@ -60,6 +60,28 @@ class HasManyAssocParams < AssocParams
 end
 
 module Associatable
+  
+  def self.query_builder(assoc, other_table)
+    if assoc.type == :belongs_to
+      join = <<-SQL #(cats belongs to a human)
+      JOIN 
+        #{other_table} 
+        ON
+        #{other_table}.#{assoc.foreign_key} = 
+        #{assoc.other_table}.#{assoc.primary_key} 
+      SQL
+    else
+      join = <<-SQL #(human has many houses)
+      JOIN
+        #{other_table}  
+      ON 
+        #{assoc.other_table}.#{assoc.foreign_key} = 
+        #{other_table}.#{assoc.primary_key} 
+      SQL
+    end
+    join
+  end
+  
   def assoc_params
     @assoc_params ||= {}
   end
@@ -75,6 +97,11 @@ module Associatable
   end
 
   def has_many(name, params = {})
+    
+    if params.include?(:through)
+      return has_many_through(name, params[:through], params[:source]) 
+    end
+    
     aps = HasManyAssocParams.new(name, params, self.class)  
     assoc_params[name] = aps
     
@@ -82,7 +109,6 @@ module Associatable
       where_clause = { aps.foreign_key => self.send(aps.primary_key) }
       aps.other_class.where(where_clause)
     end
-  
   end
 
   def has_one_through(name, assoc1, assoc2)
@@ -111,28 +137,28 @@ module Associatable
   
   def has_many_through(name, assoc1, assoc2)
     through = assoc_params[assoc1]    
-  
+    
     define_method(name) do
       source = through.other_class.assoc_params[assoc2]
       
-      #house has_many :cats, :through => :humans, :source => :cats
+      first_join = Associatable.query_builder(source, through.other_table)
+      second_join = ""
+      unless [source,through].all?{ |assoc| assoc.type == :has_many }
+        second_join = Associatable.query_builder(through, self.class.table_name)
+      end
       
       sql = <<-SQL
-        SELECT
-          #{source.other_table}.*
-        FROM
-          #{source.other_table}
-        JOIN
-          #{through.other_table}
-          ON
-          #{source.foreign_key} = #{through.other_table}.#{source.primary_key}
-       WHERE
-         #{through.other_table}.#{through.foreign_key} = #{self.id}
-        SQL
-        
-        source.other_class.parse_all(DBConnection.execute(sql))
+      SELECT
+        #{source.other_table}.*
+      FROM
+        #{source.other_table}
+      #{first_join}
+      #{second_join}
+      WHERE
+        #{self.class.table_name}.#{through.primary_key} = #{self.id}
+      SQL
+      
+      source.other_class.parse_all(DBConnection.execute(sql))
     end
-    
   end
-  
 end
